@@ -1,0 +1,37 @@
+database:
+  host: localhost
+  port: 5432
+  name: chatgpt_db
+  user: chatgpt_user
+  password: chatgpt_password
+
+redis:
+  host: localhost
+  port: 6379
+  password: ""
+
+training:
+  model_name: "deepseek-chat"
+  learning_rate: 1e-5
+  batch_size: 8
+  mini_batch_size: 2
+  gradient_accumulation_steps: 4
+  max_response_length: 512
+  num_epochs: 10
+  steps_per_epoch: 100
+
+reward_model:
+  base_model: "microsoft/DialoGPT-medium"
+  learning_rate: 5e-5
+  batch_size: 16
+  num_epochs: 3
+
+wandb:
+  enabled: true
+  project: "deepseek-rlhf"
+  entity: "your-wandb-username"
+
+model:
+  checkpoint_dir: "./checkpoints"
+  max_checkpoints: 5
+  save_every_n_steps: 500

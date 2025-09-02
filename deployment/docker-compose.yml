@@ -1,0 +1,258 @@
+version: '3.8'
+
+services:
+  # Database Services
+  postgres:
+    image: postgres:15-alpine
+    container_name: chatgpt_postgres
+    environment:
+      POSTGRES_DB: chatgpt_db
+      POSTGRES_USER: chatgpt_user
+      POSTGRES_PASSWORD: chatgpt_password
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ../database/init.sql:/docker-entrypoint-initdb.d/init.sql
+    networks:
+      - chatgpt_network
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    container_name: chatgpt_redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    networks:
+      - chatgpt_network
+    restart: unless-stopped
+
+  # Message Queue
+  kafka:
+    image: confluentinc/cp-kafka:latest
+    container_name: chatgpt_kafka
+    environment:
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+    ports:
+      - "9092:9092"
+    depends_on:
+      - zookeeper
+    networks:
+      - chatgpt_network
+    restart: unless-stopped
+
+  zookeeper:
+    image: confluentinc/cp-zookeeper:latest
+    container_name: chatgpt_zookeeper
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
+    ports:
+      - "2181:2181"
+    networks:
+      - chatgpt_network
+    restart: unless-stopped
+
+  # Backend API
+  backend:
+    build:
+      context: ../backend
+      dockerfile: Dockerfile
+    container_name: chatgpt_backend
+    environment:
+      DB_HOST: postgres
+      DB_PORT: 5432
+      DB_NAME: chatgpt_db
+      DB_USER: chatgpt_user
+      DB_PASSWORD: chatgpt_password
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      DEEPSEEK_API_URL: http://llm_server:8000
+      JWT_SECRET: your-super-secret-jwt-key-change-in-production
+      KAFKA_BROKERS: kafka:9092
+    ports:
+      - "8080:8080"
+    depends_on:
+      - postgres
+      - redis
+      - kafka
+    networks:
+      - chatgpt_network
+    restart: unless-stopped
+
+  # Frontend
+  frontend:
+    build:
+      context: ../frontend
+      dockerfile: Dockerfile
+    container_name: chatgpt_frontend
+    environment:
+      NEXT_PUBLIC_API_URL: http://localhost:8080
+    ports:
+      - "3000:3000"
+    depends_on:
+      - backend
+    networks:
+      - chatgpt_network
+    restart: unless-stopped
+
+  # LLM Server (DeepSeek)
+  llm_server:
+    build:
+      context: ../llm
+      dockerfile: Dockerfile
+    container_name: chatgpt_llm_server
+    environment:
+      MODEL_PATH: /models/deepseek
+      MAX_TOKENS: 4096
+      TEMPERATURE: 0.7
+    ports:
+      - "8000:8000"
+    volumes:
+      - model_data:/models
+    networks:
+      - chatgpt_network
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    restart: unless-stopped
+
+  # Training Pipeline
+  training_pipeline:
+    build:
+      context: ../training
+      dockerfile: Dockerfile
+    container_name: chatgpt_training
+    environment:
+      DB_HOST: postgres
+      DB_PORT: 5432
+      DB_NAME: chatgpt_db
+      DB_USER: chatgpt_user
+      DB_PASSWORD: chatgpt_password
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      KAFKA_BROKERS: kafka:9092
+      WANDB_API_KEY: ${WANDB_API_KEY}
+    volumes:
+      - model_data:/models
+      - training_data:/data
+      - checkpoints:/checkpoints
+    depends_on:
+      - postgres
+      - redis
+      - kafka
+    networks:
+      - chatgpt_network
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    restart: unless-stopped
+
+  # Agent Orchestrator
+  agent_orchestrator:
+    build:
+      context: ../agents/orchestrator
+      dockerfile: Dockerfile
+    container_name: chatgpt_orchestrator
+    environment:
+      DB_HOST: postgres
+      DB_PORT: 5432
+      DB_NAME: chatgpt_db
+      DB_USER: chatgpt_user
+      DB_PASSWORD: chatgpt_password
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      KAFKA_BROKERS: kafka:9092
+    depends_on:
+      - postgres
+      - redis
+      - kafka
+    networks:
+      - chatgpt_network
+    restart: unless-stopped
+
+  # Training Agent
+  training_agent:
+    build:
+      context: ../agents/trainer
+      dockerfile: Dockerfile
+    container_name: chatgpt_training_agent
+    environment:
+      DB_HOST: postgres
+      DB_PORT: 5432
+      DB_NAME: chatgpt_db
+      DB_USER: chatgpt_user
+      DB_PASSWORD: chatgpt_password
+      KAFKA_BROKERS: kafka:9092
+    volumes:
+      - model_data:/models
+      - checkpoints:/checkpoints
+    depends_on:
+      - postgres
+      - kafka
+      - agent_orchestrator
+    networks:
+      - chatgpt_network
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    restart: unless-stopped
+
+  # Monitoring
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: chatgpt_prometheus
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml
+      - prometheus_data:/prometheus
+    networks:
+      - chatgpt_network
+    restart: unless-stopped
+
+  grafana:
+    image: grafana/grafana:latest
+    container_name: chatgpt_grafana
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: admin
+    ports:
+      - "3001:3000"
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./monitoring/grafana/dashboards:/etc/grafana/provisioning/dashboards
+      - ./monitoring/grafana/datasources:/etc/grafana/provisioning/datasources
+    depends_on:
+      - prometheus
+    networks:
+      - chatgpt_network
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
+  redis_data:
+  model_data:
+  training_data:
+  checkpoints:
+  prometheus_data:
+  grafana_data:
+
+networks:
+  chatgpt_network:
+    driver: bridge
