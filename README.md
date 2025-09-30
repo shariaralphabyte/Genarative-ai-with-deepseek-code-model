@@ -25,7 +25,7 @@ A full-stack chatbot system featuring custom DeepSeek LLM integration, real-time
 
 ### 1. Clone and Setup
 ```bash
-git clone <repository-url>
+git clone https://github.com/shariaralphabyte/Genarative-ai-with-deepseek-code-model.git
 cd Re
 ```
 
