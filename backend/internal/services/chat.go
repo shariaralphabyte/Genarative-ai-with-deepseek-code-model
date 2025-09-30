@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"fmt"
 	"log"
+	"strings"
 	"time"
 
 	"chatgpt-system/internal/llm"
@@ -29,6 +30,7 @@ func (cs *ChatService) ProcessMessage(ctx context.Context, userID uuid.UUID, req
 	log.Printf("Processing message for user %s: %s", userID, req.Message)
 	// Get or create conversation
 	conversationID := req.ConversationID
+	isNewConversation := conversationID == nil
 	if conversationID == nil {
 		newConvID, err := cs.createConversation(ctx, userID, req.SystemPrompt)
 		if err != nil {
@@ -48,6 +50,23 @@ func (cs *ChatService) ProcessMessage(ctx context.Context, userID uuid.UUID, req
 
 	if err := cs.storeMessage(ctx, userMessage); err != nil {
 		return nil, err
+	}
+
+	// Set conversation title for new conversations based on first message
+	if isNewConversation {
+		// Get first 5 words of the message
+		words := strings.Fields(req.Message)
+		title := req.Message
+		if len(words) > 5 {
+			title = strings.Join(words[:5], " ") + "..."
+		} else if len(words) > 0 {
+			title = strings.Join(words, " ")
+		}
+		// Fallback to character limit if still too long
+		if len(title) > 50 {
+			title = title[:50] + "..."
+		}
+		cs.updateConversationTitle(ctx, *conversationID, title)
 	}
 
 	// Get conversation history
@@ -271,6 +290,12 @@ func (cs *ChatService) createConversation(ctx context.Context, userID uuid.UUID,
 		conversationID, userID, "deepseek-v1.0", systemPrompt, time.Now(), time.Now())
 
 	return conversationID, err
+}
+
+func (cs *ChatService) updateConversationTitle(ctx context.Context, conversationID uuid.UUID, title string) error {
+	query := `UPDATE conversations SET title = $1, updated_at = $2 WHERE id = $3`
+	_, err := cs.db.ExecContext(ctx, query, title, time.Now(), conversationID)
+	return err
 }
 
 func (cs *ChatService) storeMessage(ctx context.Context, message models.Message) error {

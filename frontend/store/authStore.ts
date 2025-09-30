@@ -71,11 +71,14 @@ export const useAuthStore = create<AuthState>()(
 
       checkAuth: async () => {
         const { token } = get()
+        console.log('Checking auth, token:', !!token)
         if (token) {
           axios.defaults.headers.common['Authorization'] = `Bearer ${token}`
           set({ isAuthenticated: true })
+          console.log('Auth check passed, user authenticated')
         } else {
           set({ isAuthenticated: false })
+          console.log('Auth check failed, no token')
         }
       },
     }),

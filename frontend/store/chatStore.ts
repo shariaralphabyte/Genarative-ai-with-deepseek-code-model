@@ -56,6 +56,9 @@ export const useChatStore = create<ChatState>((set, get) => ({
   sendMessage: async (content: string, stream = false) => {
     const { currentConversation, settings } = get()
     
+    console.log('SendMessage called with:', content)
+    console.log('Current conversation:', currentConversation)
+    
     set({ isLoading: true })
 
     try {
@@ -68,6 +71,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
       // Add user message to current conversation
       if (currentConversation) {
+        console.log('Adding message to existing conversation:', currentConversation.id)
         set({
           currentConversation: {
             ...currentConversation,
@@ -76,13 +80,28 @@ export const useChatStore = create<ChatState>((set, get) => ({
         })
       } else {
         // Create new conversation
+        console.log('Creating new conversation locally')
+        // Get first 5 words for title
+        const words = content.trim().split(/\s+/)
+        let title = content
+        if (words.length > 5) {
+          title = words.slice(0, 5).join(' ') + '...'
+        } else if (words.length > 0) {
+          title = words.join(' ')
+        }
+        // Fallback to character limit if still too long
+        if (title.length > 50) {
+          title = title.slice(0, 50) + '...'
+        }
+        
         const newConversation: Conversation = {
           id: crypto.randomUUID(),
-          title: content.slice(0, 50) + (content.length > 50 ? '...' : ''),
+          title: title,
           messages: [userMessage],
           created_at: new Date(),
           updated_at: new Date(),
         }
+        console.log('New conversation created:', newConversation)
         set({ currentConversation: newConversation })
       }
 
@@ -232,8 +251,14 @@ export const useChatStore = create<ChatState>((set, get) => ({
       throw new Error('No authentication token available')
     }
     
+    // Only send conversation_id if it's a real backend conversation (not a locally created one)
+    const isLocalConversation = currentConversation && !currentConversation.messages.some(m => m.role === 'assistant')
+    const conversationIdToSend = isLocalConversation ? undefined : currentConversation?.id
+    
+    console.log('Sending conversation_id:', conversationIdToSend, 'isLocalConversation:', isLocalConversation)
+    
     const response = await axios.post('/api/chat', {
-      conversation_id: currentConversation?.id,
+      conversation_id: conversationIdToSend,
       message: content,
       temperature: settings.temperature,
       max_tokens: settings.maxTokens,
@@ -254,15 +279,27 @@ export const useChatStore = create<ChatState>((set, get) => ({
       inference_time_ms: response.data.inference_time_ms,
     }
 
+    // Update conversation ID if this was a new conversation
+    const conversationId = response.data.conversation_id
+    console.log('Backend returned conversation ID:', conversationId)
+    
     // Add assistant message to conversation
     const { currentConversation: updatedConversation } = get()
     if (updatedConversation) {
-      set({
-        currentConversation: {
-          ...updatedConversation,
-          messages: [...updatedConversation.messages, assistantMessage],
-        },
-      })
+      console.log('Updating conversation with backend ID:', conversationId)
+      const updatedConv = {
+        ...updatedConversation,
+        id: conversationId, // Update with backend conversation ID
+        messages: [...updatedConversation.messages, assistantMessage],
+        updated_at: new Date(),
+      }
+      
+      console.log('Updated conversation:', updatedConv)
+      set({ currentConversation: updatedConv })
+      
+      // Refresh conversations list to include the new/updated conversation
+      console.log('Refreshing conversations list...')
+      get().loadConversations()
     }
   },
 
@@ -272,22 +309,75 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
   loadConversations: async () => {
     try {
-      const response = await axios.get('/api/history')
-      set({ conversations: response.data || [] })
+      // Get token directly from useAuthStore
+      const authState = useAuthStore.getState()
+      const token = authState.token
+      
+      console.log('Loading conversations, token available:', !!token)
+      console.log('Current user:', authState.user)
+      console.log('Token (first 20 chars):', token?.substring(0, 20) + '...')
+      
+      if (!token) {
+        console.error('No authentication token available for loading conversations')
+        return
+      }
+      
+      console.log('Making API call to /api/history...')
+      const response = await axios.get('/api/history', {
+        headers: {
+          'Authorization': `Bearer ${token}`,
+        },
+      })
+      
+      console.log('Full API response:', response)
+      console.log('Response status:', response.status)
+      console.log('Response headers:', response.headers)
+      
+      console.log('API response received:', response.data)
+      
+      const conversations = (response.data || []).map((conv: any) => ({
+        ...conv,
+        created_at: new Date(conv.created_at),
+        updated_at: new Date(conv.updated_at),
+        messages: [], // Messages will be loaded when conversation is selected
+      }))
+      
+      console.log('Processed conversations:', conversations)
+      set({ conversations })
     } catch (error) {
       console.error('Failed to load conversations:', error)
+      if (axios.isAxiosError(error)) {
+        console.error('Response status:', error.response?.status)
+        console.error('Response data:', error.response?.data)
+      }
       set({ conversations: [] })
     }
   },
 
   loadConversation: async (id: string) => {
     try {
-      const response = await axios.get(`/api/conversation/${id}`)
+      // Get token directly from useAuthStore
+      const authState = useAuthStore.getState()
+      const token = authState.token
+      
+      if (!token) {
+        console.error('No authentication token available for loading conversation')
+        return
+      }
+      
+      const response = await axios.get(`/api/conversation/${id}`, {
+        headers: {
+          'Authorization': `Bearer ${token}`,
+        },
+      })
+      
       const { conversation, messages } = response.data
       
       set({
         currentConversation: {
           ...conversation,
+          created_at: new Date(conversation.created_at),
+          updated_at: new Date(conversation.updated_at),
           messages: messages.map((msg: any) => ({
             ...msg,
             timestamp: new Date(msg.created_at),
